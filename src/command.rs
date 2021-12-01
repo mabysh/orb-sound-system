@@ -15,7 +15,7 @@ pub struct PlaySoundCommand {
 }
 
 // note about ordering top-to-bottom by discriminant
-#[derive(PartialOrd, PartialEq)]
+#[derive(PartialOrd, PartialEq, Ord, Eq, Debug)]
 pub enum SoundPriority {
     Urgent,
     High,
