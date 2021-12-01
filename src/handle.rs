@@ -3,5 +3,5 @@ use crate::command::SoundCommand;
 
 #[derive(Clone)]
 pub struct OrbSoundSystemHandle {
-    pub(crate) tx: Sender<SoundCommand>,
+    pub(crate) command_sender: Sender<SoundCommand>,
 }
