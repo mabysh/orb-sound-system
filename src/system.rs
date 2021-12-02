@@ -2,18 +2,15 @@ use std::cmp::Ordering;
 use std::collections::VecDeque;
 use std::fs::File;
 use std::io::BufReader;
-use std::sync::mpsc;
-use std::sync::mpsc::{Receiver, TryRecvError};
+use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
 use std::time::Instant;
 
+use rodio::{Decoder, OutputStream, Sink, Source};
 use rodio::buffer::SamplesBuffer;
-use rodio::source::Buffered;
-use rodio::{Decoder, OutputStream, Sample, Sink, Source};
 
-use crate::command::{PlaySoundCommand, SoundCommand, SoundPriority};
 use crate::error::OrbSoundSystemError;
-use crate::handle::OrbSoundSystemHandle;
+use crate::handle::{OrbSoundSystemHandle, PlaySoundCommand, SoundCommand, SoundPriority};
 
 pub struct OrbSoundSystem {
     command_receiver: Receiver<SoundCommand>,
@@ -28,7 +25,7 @@ impl OrbSoundSystem {
         let sink = Sink::try_new(&stream_handle).map_err(|e| OrbSoundSystemError::PlayErr(e))?;
         let (command_sender, command_receiver) = mpsc::channel::<SoundCommand>();
 
-        let mut system = Self {
+        let system = Self {
             command_receiver,
             soundtrack: sink,
             queue: VecDeque::new(),
@@ -117,7 +114,7 @@ impl TryFrom<PlaySoundCommand> for Sound {
     fn try_from(command: PlaySoundCommand) -> Result<Self, Self::Error> {
         let file = File::open(command.path)
             .map_err(|e| OrbSoundSystemError::SoundFileErr(e.to_string()))?;
-        let mut source = Decoder::new(BufReader::new(file))
+        let source = Decoder::new(BufReader::new(file))
             .map_err(|e| OrbSoundSystemError::SoundFileErr(e.to_string()))?;
         let channels = source.channels();
         let rate = source.sample_rate();
@@ -163,12 +160,10 @@ mod test {
     use std::collections::VecDeque;
     use std::time::{Duration, Instant};
 
-    use rodio::buffer::SamplesBuffer;
-    use rodio::source::Buffered;
     use rodio::{OutputStream, Sink};
+    use rodio::buffer::SamplesBuffer;
 
-    use crate::command::{PlaySoundCommand, SoundPriority};
-    use crate::error::OrbSoundSystemError;
+    use crate::handle::{PlaySoundCommand, SoundPriority};
     use crate::system::Sound;
 
     #[test]
