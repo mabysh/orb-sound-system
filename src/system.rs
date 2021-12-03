@@ -9,8 +9,8 @@ use std::time::Instant;
 use rodio::{Decoder, OutputStream, Sink, Source};
 use rodio::buffer::SamplesBuffer;
 
-use crate::error::OrbSoundSystemError;
 use crate::handle::{OrbSoundSystemHandle, PlaySoundCommand, SoundCommand, SoundPriority};
+use crate::OrbSoundSystemError;
 
 pub struct OrbSoundSystem {
     command_receiver: Receiver<SoundCommand>,
@@ -54,15 +54,10 @@ impl OrbSoundSystem {
         loop {
             match self.command_receiver.try_recv() {
                 Ok(command) => match command {
-                    SoundCommand::PlaySound(command) => match Sound::try_from(command) {
-                        Ok(sound) => {
-                            self.queue.push_back(sound);
-                        }
-                        Err(err) => {
-                            // something went wrong..
-                            dbg!(err);
-                        }
-                    },
+                    SoundCommand::PlaySound(command) => {
+                        let sound = Sound::try_from(command).expect("Failed to construct sound");
+                        self.queue.push_back(sound);
+                    }
                     SoundCommand::SetVolume(value) => {
                         self.soundtrack.set_volume(value);
                     }
@@ -112,17 +107,20 @@ impl TryFrom<PlaySoundCommand> for Sound {
     type Error = OrbSoundSystemError;
 
     fn try_from(command: PlaySoundCommand) -> Result<Self, Self::Error> {
-        let file = File::open(command.path)
-            .map_err(|e| OrbSoundSystemError::SoundFileErr(e.to_string()))?;
-        let source = Decoder::new(BufReader::new(file))
-            .map_err(|e| OrbSoundSystemError::SoundFileErr(e.to_string()))?;
+        let file = File::open(&command.path).map_err(|e| {
+            OrbSoundSystemError::SoundFileErr(format!("{}: {}", &command.path, e.to_string()))
+        })?;
+        let source = Decoder::new(BufReader::new(file)).map_err(|e| {
+            OrbSoundSystemError::SoundFileErr(format!("{}: {}", &command.path, e.to_string()))
+        })?;
         let channels = source.channels();
         let rate = source.sample_rate();
         let samples: Vec<i16> = source.collect();
+        let play_deadline = command.max_delay.map(|delay| Instant::now() + delay);
         Ok(Self {
             samples: SamplesBuffer::new(channels, rate, samples),
             priority: command.priority,
-            play_deadline: command.max_delay.map(|delay| Instant::now() + delay),
+            play_deadline,
         })
     }
 }
@@ -158,18 +156,20 @@ impl Eq for Sound {}
 #[cfg(test)]
 mod test {
     use std::collections::VecDeque;
+    use std::sync::mpsc;
+    use std::sync::mpsc::Sender;
     use std::time::{Duration, Instant};
 
-    use rodio::{OutputStream, Sink};
     use rodio::buffer::SamplesBuffer;
+    use rodio::Sink;
 
-    use crate::handle::{PlaySoundCommand, SoundPriority};
-    use crate::system::Sound;
+    use crate::handle::{PlaySoundCommand, SoundCommand, SoundPriority};
+    use crate::system::{OrbSoundSystem, Sound};
 
     #[test]
     fn convert_command() {
         let cmd = PlaySoundCommand {
-            path: "sounds/kid_laugh.wav".to_string(),
+            path: "sounds/test.wav".to_string(),
             priority: SoundPriority::High,
             max_delay: Some(Duration::from_secs(2)),
         };
@@ -185,21 +185,21 @@ mod test {
     #[test]
     fn sound_priority_sorting() {
         let mut queue = VecDeque::new();
-        queue.push_back(test_sound(SoundPriority::Default, None));
-        queue.push_back(test_sound(
+        queue.push_back(mock_sound(SoundPriority::Default, None));
+        queue.push_back(mock_sound(
             SoundPriority::Default,
-            Some(Duration::from_secs(2)),
+            Some(Instant::now() + Duration::from_secs(2)),
         ));
-        queue.push_back(test_sound(SoundPriority::High, None));
-        queue.push_back(test_sound(
+        queue.push_back(mock_sound(SoundPriority::High, None));
+        queue.push_back(mock_sound(
             SoundPriority::High,
-            Some(Duration::from_secs(5)),
+            Some(Instant::now() + Duration::from_secs(5)),
         ));
-        queue.push_back(test_sound(
+        queue.push_back(mock_sound(
             SoundPriority::High,
-            Some(Duration::from_secs(3)),
+            Some(Instant::now() + Duration::from_secs(3)),
         ));
-        queue.push_back(test_sound(SoundPriority::Urgent, None));
+        queue.push_back(mock_sound(SoundPriority::Urgent, None));
         queue.make_contiguous().sort();
 
         assert_eq!(queue.get(0).unwrap().priority, SoundPriority::Urgent);
@@ -220,30 +220,100 @@ mod test {
         );
         assert_eq!(queue.get(5).unwrap().priority, SoundPriority::Default);
         assert_eq!(queue.get(5).unwrap().play_deadline, None);
-
-        fn test_sound(priority: SoundPriority, max_delay: Option<Duration>) -> Sound {
-            Sound {
-                samples: SamplesBuffer::new(1, 44100, vec![1i16, 2, 3]),
-                priority,
-                play_deadline: max_delay.map(|delay| Instant::now() + delay),
-            }
-        }
     }
 
     #[test]
-    #[ignore]
-    fn play_sound() {
+    fn process_commands() {
+        let (mut system, command_sender) = mock_system();
+        // pause
+        command_sender.send(SoundCommand::Pause).unwrap();
+        let _ = system.process_incoming_commands();
+        assert!(system.soundtrack.is_paused());
+        // resume
+        command_sender.send(SoundCommand::Unpause).unwrap();
+        let _ = system.process_incoming_commands();
+        assert!(!system.soundtrack.is_paused());
+        // set volume
+        command_sender.send(SoundCommand::SetVolume(2.0)).unwrap();
+        let _ = system.process_incoming_commands();
+        assert_eq!(system.soundtrack.volume(), 2.0);
+        // adjust volume
+        command_sender
+            .send(SoundCommand::AdjustVolume(0.5))
+            .unwrap();
+        let _ = system.process_incoming_commands();
+        assert_eq!(system.soundtrack.volume(), 2.5);
+        command_sender
+            .send(SoundCommand::AdjustVolume(-1.0))
+            .unwrap();
+        let _ = system.process_incoming_commands();
+        assert_eq!(system.soundtrack.volume(), 1.5);
+    }
+
+    #[test]
+    fn shutdown() {
+        let (mut system, command_sender) = mock_system();
+        std::mem::drop(command_sender);
+        let shutdown = system.process_incoming_commands();
+        assert!(shutdown);
+    }
+
+    #[test]
+    fn next_sound() {
+        let (mut system, command_sender) = mock_system();
         let cmd = PlaySoundCommand {
-            path: "sounds/kid_laugh.wav".to_string(),
+            path: "sounds/test.wav".to_string(),
             priority: SoundPriority::Default,
             max_delay: None,
         };
 
-        // FIXME use system to play it
-        let sound = Sound::try_from(cmd).unwrap();
-        let (_stream, stream_handle) = OutputStream::try_default().unwrap();
-        let sink = Sink::try_new(&stream_handle).unwrap();
-        sink.append(sound.samples);
-        sink.sleep_until_end();
+        command_sender.send(SoundCommand::PlaySound(cmd)).unwrap();
+        let _ = system.process_incoming_commands();
+        assert!(system.next_sound().is_some());
+    }
+
+    #[test]
+    fn next_sound_after_deadline() {
+        let (mut system, _command_sender) = mock_system();
+        system.queue.push_back(mock_sound(
+            SoundPriority::Default,
+            Some(Instant::now() - Duration::from_millis(100)),
+        ));
+
+        assert!(system.next_sound().is_none());
+    }
+
+    #[test]
+    #[ignore]
+    fn read_wav() {
+        let cmd = PlaySoundCommand {
+            path: "sounds/test.wav".to_string(),
+            priority: SoundPriority::High,
+            max_delay: Some(Duration::from_secs(2)),
+        };
+
+        let before = Instant::now();
+        let _ = Sound::try_from(cmd).unwrap();
+        let after = Instant::now();
+        let time = after - before;
+        println!("{}", format!("Time: {}", time.as_millis()));
+    }
+
+    fn mock_system() -> (OrbSoundSystem, Sender<SoundCommand>) {
+        let (tx, rx) = mpsc::channel::<SoundCommand>();
+        let system = OrbSoundSystem {
+            command_receiver: rx,
+            soundtrack: Sink::new_idle().0,
+            queue: VecDeque::new(),
+        };
+        (system, tx)
+    }
+
+    fn mock_sound(priority: SoundPriority, play_deadline: Option<Instant>) -> Sound {
+        Sound {
+            samples: SamplesBuffer::new(1, 44100, vec![1i16, 2, 3]),
+            priority,
+            play_deadline,
+        }
     }
 }

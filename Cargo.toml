@@ -8,3 +8,4 @@ authors = ["Max Byshnev <max.byshnev@gmail.com>"]
 
 [dependencies]
 rodio = "0.14.0"
+thiserror-impl = "1.0.30"
