@@ -6,8 +6,7 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
 use std::time::Instant;
 
-use rodio::{Decoder, OutputStream, Sink, Source};
-use rodio::buffer::SamplesBuffer;
+use rodio::{Decoder, OutputStream, Sink};
 
 use crate::handle::{OrbSoundSystemHandle, PlaySoundCommand, SoundCommand, SoundPriority};
 use crate::OrbSoundSystemError;
@@ -44,7 +43,7 @@ impl OrbSoundSystem {
 
             if self.soundtrack.empty() {
                 if let Some(next_sound) = self.next_sound() {
-                    self.soundtrack.append(next_sound.samples);
+                    self.soundtrack.append(next_sound.source);
                 }
             }
         });
@@ -98,7 +97,7 @@ impl OrbSoundSystem {
 }
 
 struct Sound {
-    samples: SamplesBuffer<i16>,
+    source: Decoder<BufReader<File>>,
     priority: SoundPriority,
     play_deadline: Option<Instant>,
 }
@@ -107,20 +106,20 @@ impl TryFrom<PlaySoundCommand> for Sound {
     type Error = OrbSoundSystemError;
 
     fn try_from(command: PlaySoundCommand) -> Result<Self, Self::Error> {
+        // Buffer that may contain up to 50ms of wav data with 44100 sample rate
+        const BUFFER_CAPACITY: usize = 44100 / 20 * 4;
+
         let file = File::open(&command.path).map_err(|e| {
             OrbSoundSystemError::SoundFileErr(format!("{}: {}", &command.path, e.to_string()))
         })?;
-        let source = Decoder::new(BufReader::new(file)).map_err(|e| {
-            OrbSoundSystemError::SoundFileErr(format!("{}: {}", &command.path, e.to_string()))
-        })?;
-        let channels = source.channels();
-        let rate = source.sample_rate();
-        let samples: Vec<i16> = source.collect();
-        let play_deadline = command.max_delay.map(|delay| Instant::now() + delay);
+        let source =
+            Decoder::new_wav(BufReader::with_capacity(BUFFER_CAPACITY, file)).map_err(|e| {
+                OrbSoundSystemError::SoundFileErr(format!("{}: {}", &command.path, e.to_string()))
+            })?;
         Ok(Self {
-            samples: SamplesBuffer::new(channels, rate, samples),
+            source,
             priority: command.priority,
-            play_deadline,
+            play_deadline: command.max_delay.map(|delay| Instant::now() + delay),
         })
     }
 }
@@ -160,7 +159,6 @@ mod test {
     use std::sync::mpsc::Sender;
     use std::time::{Duration, Instant};
 
-    use rodio::buffer::SamplesBuffer;
     use rodio::Sink;
 
     use crate::handle::{PlaySoundCommand, SoundCommand, SoundPriority};
@@ -179,7 +177,7 @@ mod test {
         let sound = res.unwrap();
         assert_eq!(sound.priority, SoundPriority::High);
         assert!(Some(Instant::now() + Duration::from_secs(2)) > sound.play_deadline);
-        assert!(!sound.samples.collect::<Vec<i16>>().is_empty());
+        assert!(!sound.source.collect::<Vec<i16>>().is_empty());
     }
 
     #[test]
@@ -283,22 +281,6 @@ mod test {
         assert!(system.next_sound().is_none());
     }
 
-    #[test]
-    #[ignore]
-    fn read_wav() {
-        let cmd = PlaySoundCommand {
-            path: "sounds/test.wav".to_string(),
-            priority: SoundPriority::High,
-            max_delay: Some(Duration::from_secs(2)),
-        };
-
-        let before = Instant::now();
-        let _ = Sound::try_from(cmd).unwrap();
-        let after = Instant::now();
-        let time = after - before;
-        println!("{}", format!("Time: {}", time.as_millis()));
-    }
-
     fn mock_system() -> (OrbSoundSystem, Sender<SoundCommand>) {
         let (tx, rx) = mpsc::channel::<SoundCommand>();
         let system = OrbSoundSystem {
@@ -310,10 +292,14 @@ mod test {
     }
 
     fn mock_sound(priority: SoundPriority, play_deadline: Option<Instant>) -> Sound {
-        Sound {
-            samples: SamplesBuffer::new(1, 44100, vec![1i16, 2, 3]),
-            priority,
-            play_deadline,
-        }
+        let cmd = PlaySoundCommand {
+            path: "sounds/test.wav".to_string(),
+            priority: SoundPriority::Default,
+            max_delay: None,
+        };
+        let mut sound = Sound::try_from(cmd).unwrap();
+        sound.priority = priority;
+        sound.play_deadline = play_deadline;
+        sound
     }
 }
