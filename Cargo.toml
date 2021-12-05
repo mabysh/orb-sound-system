@@ -9,3 +9,4 @@ authors = ["Max Byshnev <max.byshnev@gmail.com>"]
 [dependencies]
 rodio = { version = "0.14.0", features = ["wav"] }
 thiserror-impl = "1.0.30"
+rtrb = "0.2.0"
