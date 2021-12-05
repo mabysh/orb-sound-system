@@ -5,8 +5,12 @@ use std::time::Duration;
 use rodio::{Decoder, Sample, Sink, Source};
 use rtrb::{Consumer, Producer, RingBuffer};
 
-use crate::handle::{PlaySoundCommand};
 use crate::OrbSoundSystemError;
+
+// Buffer that may contain up to 50ms of wav data with 44100 sample rate
+const BUFFER_CAPACITY: usize = 44100 / 20 * 2;
+
+pub(crate) type Sound = OrbSound<Decoder<BufReader<File>>>;
 
 pub(crate) struct OrbSound<I> {
     reader: I,
@@ -15,18 +19,16 @@ pub(crate) struct OrbSound<I> {
 
 impl OrbSound<Decoder<BufReader<File>>> {
     pub fn play(
-        cmd: PlaySoundCommand,
+        path: &str,
         sink: &Sink,
-    ) -> Result<OrbSound<Decoder<BufReader<File>>>, OrbSoundSystemError> {
-        // Buffer that may contain up to 50ms of wav data with 44100 sample rate
-        const BUFFER_CAPACITY: usize = 44100 / 20 * 2;
+    ) -> Result<Sound, OrbSoundSystemError> {
         let (producer, consumer) = RingBuffer::new(BUFFER_CAPACITY);
 
-        let file = File::open(&cmd.path).map_err(|e| {
-            OrbSoundSystemError::SoundFileErr(format!("{}: {}", &cmd.path, e.to_string()))
+        let file = File::open(path).map_err(|e| {
+            OrbSoundSystemError::SoundFileErr(format!("{}: {}", path, e.to_string()))
         })?;
         let decoder = Decoder::new_wav(BufReader::new(file)).map_err(|e| {
-            OrbSoundSystemError::SoundFileErr(format!("{}: {}", &cmd.path, e.to_string()))
+            OrbSoundSystemError::SoundFileErr(format!("{}: {}", path, e.to_string()))
         })?;
         let source = OrbSoundSource {
             buffer: consumer,
@@ -100,5 +102,80 @@ impl Source for OrbSoundSource {
 
     fn total_duration(&self) -> Option<Duration> {
         None
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::time::Duration;
+    use rodio::{OutputStream, Sample, Sink};
+    use rodio::buffer::SamplesBuffer;
+    use rtrb::RingBuffer;
+
+    use crate::OrbSoundSystemError;
+    use crate::system::sound::{OrbSound, OrbSoundSource};
+
+    #[test]
+    fn source_iterator() {
+        let (mut producer, consumer) = RingBuffer::new(2);
+        let mut source = OrbSoundSource {
+            buffer: consumer,
+            channels: 0,
+            sample_rate: 0
+        };
+        producer.push(1).unwrap();
+        producer.push(2).unwrap();
+        assert_eq!(source.next(), Some(1));
+        assert_eq!(source.next(), Some(2));
+        // buffer underrun
+        assert_eq!(source.next(), Some(<i16 as Sample>::zero_value()));
+        drop(producer);
+        assert_eq!(source.next(), None);
+    }
+
+    #[test]
+    fn fill_buffer() {
+        let reader = SamplesBuffer::new(2, 1, vec![1i16; 15]);
+        let (producer, consumer) = RingBuffer::new(10);
+        let mut source = OrbSoundSource {
+            buffer: consumer,
+            channels: 0,
+            sample_rate: 0
+        };
+        let mut sound = OrbSound {
+            reader,
+            buffer: producer
+        };
+        let out_of_data = sound.fill_buffer();
+        assert!(!out_of_data);
+        assert_eq!(source.buffer.slots(), 10);
+        for _ in 0..10 {
+            assert_eq!(source.next(), Some(1));
+        }
+        assert_eq!(source.next(), Some(<i16 as Sample>::zero_value()));
+        let out_of_data = sound.fill_buffer();
+        assert!(out_of_data);
+        assert_eq!(source.buffer.slots(), 5);
+        drop(sound);
+        for _ in 0..5 {
+            assert_eq!(source.next(), Some(1));
+        }
+        assert_eq!(source.next(), None);
+    }
+
+    #[test]
+    #[ignore]
+    fn ring_buffer() {
+        let (_stream, stream_handle) =
+            OutputStream::try_default().map_err(|e| OrbSoundSystemError::StreamErr(e)).unwrap();
+        let sink = Sink::try_new(&stream_handle).map_err(|e| OrbSoundSystemError::PlayErr(e)).unwrap();
+        let mut sound = OrbSound::play("sounds/test.wav", &sink).unwrap();
+        loop {
+            let finished = sound.fill_buffer();
+            if finished  {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
 }

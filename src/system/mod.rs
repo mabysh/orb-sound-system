@@ -1,15 +1,13 @@
 use std::collections::VecDeque;
-use std::fs::File;
-use std::io::BufReader;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
 use std::time::Instant;
 
-use rodio::{Decoder, OutputStream, Sink};
+use rodio::{OutputStream, Sink};
 
 use crate::handle::{OrbSoundSystemHandle, PlaySoundCommand, SoundCommand};
 use crate::OrbSoundSystemError;
-use crate::system::sound::OrbSound;
+use crate::system::sound::Sound;
 
 mod sound;
 
@@ -20,7 +18,6 @@ pub struct OrbSoundSystem {
     sink: Sink,
 }
 
-type Sound = OrbSound<Decoder<BufReader<File>>>;
 
 impl OrbSoundSystem {
     pub fn initialize() -> Result<OrbSoundSystemHandle, OrbSoundSystemError> {
@@ -57,7 +54,7 @@ impl OrbSoundSystem {
             if let None = self.current_sound {
                 if let Some(next_sound) = self.next_sound() {
                     self.current_sound =
-                        Some(Sound::play(next_sound, &self.sink).expect("Failed to play sound"));
+                        Some(Sound::play(next_sound.path.as_str(), &self.sink).expect("Failed to play sound"));
                 }
             }
         });
