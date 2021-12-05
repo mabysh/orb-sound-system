@@ -39,6 +39,10 @@ impl OrbSoundSystemHandle {
         self.send_command(SoundCommand::Unpause)
     }
 
+    pub fn shutdown(&mut self) -> Result<(), OrbSoundSystemError> {
+        self.send_command(SoundCommand::Shutdown)
+    }
+
     fn send_command(&mut self, command: SoundCommand) -> Result<(), OrbSoundSystemError> {
         self.command_sender
             .send(command)
@@ -53,6 +57,7 @@ pub(crate) enum SoundCommand {
     AdjustVolume(f32),
     Pause,
     Unpause,
+    Shutdown,
 }
 
 #[derive(Debug)]

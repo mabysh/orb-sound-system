@@ -175,6 +175,7 @@ mod test {
             if finished  {
                 break;
             }
+            // set sleep duration to 50ms to hear buffer underrun glitches
             std::thread::sleep(Duration::from_millis(5));
         }
     }

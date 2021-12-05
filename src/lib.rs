@@ -1,5 +1,11 @@
+//! Sound subsystem library for Worldcoin Orb device.
+//!
+//!
 use rodio::{DevicesError, PlayError, StreamError};
 use thiserror_impl::Error;
+
+pub use handle::OrbSoundSystemHandle;
+pub use system::OrbSoundSystem;
 
 pub mod handle;
 pub mod system;

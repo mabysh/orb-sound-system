@@ -16,29 +16,49 @@ pub struct OrbSoundSystem {
     queue: VecDeque<PlaySoundCommand>,
     current_sound: Option<Sound>,
     sink: Sink,
+    _output_stream: OutputStream,
 }
 
-
 impl OrbSoundSystem {
-    pub fn initialize() -> Result<OrbSoundSystemHandle, OrbSoundSystemError> {
-        let (_stream, stream_handle) =
+    pub fn run() -> Result<OrbSoundSystemHandle, OrbSoundSystemError> {
+        let (command_sender, command_receiver) = mpsc::channel::<SoundCommand>();
+        let (err_sender, err_receiver) = mpsc::channel::<Option<OrbSoundSystemError>>();
+
+        thread::spawn(move || {
+            match OrbSoundSystem::init(command_receiver) {
+                Ok(system) => {
+                    err_sender.send(None).unwrap();
+                    system.run_event_loop();
+                }
+                Err(e) => {
+                    err_sender.send(Some(e)).unwrap();
+                }
+            }
+        });
+
+        match err_receiver.recv().unwrap() {
+            Some(err) => Err(err),
+            None => Ok(OrbSoundSystemHandle { command_sender })
+        }
+    }
+
+    fn init(command_receiver: Receiver<SoundCommand>) -> Result<Self, OrbSoundSystemError> {
+        // OutputStream must be initialized on event loop thread, otherwise there is no sound output (bug?)
+        let (stream, stream_handle) =
             OutputStream::try_default().map_err(|e| OrbSoundSystemError::StreamErr(e))?;
         let sink = Sink::try_new(&stream_handle).map_err(|e| OrbSoundSystemError::PlayErr(e))?;
-        let (command_sender, command_receiver) = mpsc::channel::<SoundCommand>();
 
-        let system = Self {
+        Ok(Self {
             command_receiver,
             queue: VecDeque::new(),
             current_sound: None,
             sink,
-        };
-        system.run();
-
-        Ok(OrbSoundSystemHandle { command_sender })
+            _output_stream: stream,
+        })
     }
 
-    fn run(mut self) {
-        thread::spawn(move || loop {
+    fn run_event_loop(mut self) {
+        loop {
             let shutdown = self.process_incoming_commands();
             if shutdown {
                 break;
@@ -53,11 +73,13 @@ impl OrbSoundSystem {
 
             if let None = self.current_sound {
                 if let Some(next_sound) = self.next_sound() {
-                    self.current_sound =
-                        Some(Sound::play(next_sound.path.as_str(), &self.sink).expect("Failed to play sound"));
+                    self.current_sound = Some(
+                        Sound::play(next_sound.path.as_str(), &self.sink)
+                            .expect("Failed to play sound"),
+                    );
                 }
             }
-        });
+        }
     }
 
     fn process_incoming_commands(&mut self) -> bool {
@@ -78,6 +100,9 @@ impl OrbSoundSystem {
                     }
                     SoundCommand::Unpause => {
                         self.sink.play();
+                    }
+                    SoundCommand::Shutdown => {
+                        return true;
                     }
                 },
                 Err(err) => {
@@ -113,7 +138,7 @@ mod test {
     use std::sync::mpsc::Sender;
     use std::time::{Duration, Instant};
 
-    use rodio::Sink;
+    use rodio::{OutputStream, Sink};
 
     use crate::handle::{PlaySoundCommand, SoundCommand, SoundPriority};
     use crate::system::OrbSoundSystem;
@@ -187,6 +212,7 @@ mod test {
             queue: VecDeque::new(),
             sink: Sink::new_idle().0,
             current_sound: None,
+            _output_stream: OutputStream::try_default().unwrap().0
         };
         (system, tx)
     }

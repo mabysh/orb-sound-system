@@ -1,5 +1,5 @@
 [package]
-name = "orb-sound"
+name = "orb_sound"
 version = "0.1.0"
 edition = "2021"
 authors = ["Max Byshnev <max.byshnev@gmail.com>"]
