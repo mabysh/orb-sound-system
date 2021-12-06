@@ -178,6 +178,7 @@ mod test {
         assert_eq!(source.next(), None);
     }
 
+    /// Demonstrates usage of ring buffer playing wav file.
     #[test]
     #[ignore]
     fn ring_buffer() {
