@@ -11,6 +11,8 @@ use crate::system::sound::Sound;
 
 mod sound;
 
+/// Type representing Orb's sound system. It runs event loop, receives playback commands, controls
+/// playback and decides what file should be played next.
 pub struct OrbSoundSystem {
     command_receiver: Receiver<SoundCommand>,
     queue: VecDeque<PlaySoundCommand>,
@@ -20,6 +22,9 @@ pub struct OrbSoundSystem {
 }
 
 impl OrbSoundSystem {
+    /// Initialize and run Orb's sound system using default sound device for output. Spawns a thread
+    /// and runs event loop on it. Returns either [`OrbSoundSystemHandle`] or some sort of
+    /// initialization error.
     pub fn run() -> Result<OrbSoundSystemHandle, OrbSoundSystemError> {
         let (command_sender, command_receiver) = mpsc::channel::<SoundCommand>();
         let (err_sender, err_receiver) = mpsc::channel::<Option<OrbSoundSystemError>>();
@@ -42,6 +47,7 @@ impl OrbSoundSystem {
         }
     }
 
+    /// Initialize default sound device.
     fn init(command_receiver: Receiver<SoundCommand>) -> Result<Self, OrbSoundSystemError> {
         // OutputStream must be initialized on event loop thread, otherwise there is no sound output (bug?)
         let (stream, stream_handle) =
@@ -57,6 +63,11 @@ impl OrbSoundSystem {
         })
     }
 
+    /// Main event loop. Responsible for:
+    ///
+    /// - Processing incoming commands
+    /// - Filling ring buffer of currently playing sound (if any)
+    /// - Playing next sound when previous has finished
     fn run_event_loop(mut self) {
         loop {
             let shutdown = self.process_incoming_commands();
@@ -82,6 +93,8 @@ impl OrbSoundSystem {
         }
     }
 
+    /// Process commands coming from channel. Returns true if system should shut down, false
+    /// otherwise.
     fn process_incoming_commands(&mut self) -> bool {
         loop {
             match self.command_receiver.try_recv() {
@@ -98,7 +111,7 @@ impl OrbSoundSystem {
                     SoundCommand::Pause => {
                         self.sink.pause();
                     }
-                    SoundCommand::Unpause => {
+                    SoundCommand::Resume => {
                         self.sink.play();
                     }
                     SoundCommand::Shutdown => {
@@ -115,6 +128,8 @@ impl OrbSoundSystem {
         }
     }
 
+    /// Returns next sound to be played by sorting queue and taking first sound. Checks play
+    /// deadlines and drops "expired" sounds
     fn next_sound(&mut self) -> Option<PlaySoundCommand> {
         self.queue.make_contiguous().sort();
         while let Some(next) = self.queue.pop_front() {
@@ -151,7 +166,7 @@ mod test {
         let _ = system.process_incoming_commands();
         assert!(system.sink.is_paused());
         // resume
-        command_sender.send(SoundCommand::Unpause).unwrap();
+        command_sender.send(SoundCommand::Resume).unwrap();
         let _ = system.process_incoming_commands();
         assert!(!system.sink.is_paused());
         // set volume

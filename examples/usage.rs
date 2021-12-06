@@ -18,7 +18,7 @@ fn main() {
     sound_system_handle.pause().unwrap();
     thread::sleep(Duration::from_millis(500));
     // resume playback
-    sound_system_handle.unpause().unwrap();
+    sound_system_handle.resume().unwrap();
     thread::sleep(Duration::from_millis(500));
     // adjust volume
     sound_system_handle.adjust_volume(1.0).unwrap();
